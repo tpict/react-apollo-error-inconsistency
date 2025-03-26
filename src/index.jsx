@@ -1,20 +1,43 @@
 /*** APP ***/
-import React, { useState } from "react";
+import React, { useState, Suspense } from "react";
+import { MockedProvider } from "@apollo/client/testing";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import { createRoot } from "react-dom/client";
 import {
-  ApolloClient,
-  ApolloProvider,
-  InMemoryCache,
+    ApolloError,
   gql,
   useQuery,
-  useMutation,
+  useSuspenseQuery,
 } from "@apollo/client";
 
-import { link } from "./link.js";
-import { Subscriptions } from "./subscriptions.jsx";
-import { Layout } from "./layout.jsx";
 import "./index.css";
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, hasRetried: false };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return <button onClick={() => {
+        this.setState({ hasError: false, hasRetried: true })
+      }}>
+        Retry
+      </button>
+    }
+
+    if (this.state.hasRetried){
+      alert("Remounting. Another alert should appear to indicate that a network request was made.");
+    }
+
+    return this.props.children;
+  }
+}
 
 const ALL_PEOPLE = gql`
   query AllPeople {
@@ -25,84 +48,97 @@ const ALL_PEOPLE = gql`
   }
 `;
 
-const ADD_PERSON = gql`
-  mutation AddPerson($name: String) {
-    addPerson(name: $name) {
-      id
-      name
-    }
-  }
-`;
-
-function App() {
-  const [name, setName] = useState("");
-  const { loading, data } = useQuery(ALL_PEOPLE);
-
-  const [addPerson] = useMutation(ADD_PERSON, {
-    update: (cache, { data: { addPerson: addPersonData } }) => {
-      const peopleResult = cache.readQuery({ query: ALL_PEOPLE });
-
-      cache.writeQuery({
-        query: ALL_PEOPLE,
-        data: {
-          ...peopleResult,
-          people: [...peopleResult.people, addPersonData],
-        },
-      });
-    },
-  });
-
-  return (
-    <main>
-      <h3>Home</h3>
-      <div className="add-person">
-        <label htmlFor="name">Name</label>
-        <input
-          type="text"
-          name="name"
-          value={name}
-          onChange={(evt) => setName(evt.target.value)}
-        />
-        <button
-          onClick={() => {
-            addPerson({ variables: { name } });
-            setName("");
-          }}
-        >
-          Add person
-        </button>
-      </div>
-      <h2>Names</h2>
-      {loading ? (
-        <p>Loading…</p>
-      ) : (
-        <ul>
-          {data?.people.map((person) => (
-            <li key={person.id}>{person.name}</li>
-          ))}
-        </ul>
-      )}
-    </main>
-  );
+const SuspenseExample= function() {
+  const { data } = useSuspenseQuery(ALL_PEOPLE);
+  return JSON.stringify(data);
 }
 
-const client = new ApolloClient({
-  cache: new InMemoryCache(),
-  link,
-});
+const NonSuspenseExampleInner = function({ retry }) {
+  const { data, error } = useQuery(ALL_PEOPLE);
+  
+  if (error) {
+      return <button onClick={() => {
+      alert("Remounting. Another alert should appear to indicate that a network request was made.");
+        retry()
+      }}>
+        Retry
+      </button>
+  }
+
+  return JSON.stringify(data);
+}
+
+const NonSuspenseExample = function() {
+  const [key, setKey] = useState(0);
+  return <NonSuspenseExampleInner key={key} retry={() => {
+    setKey(key + 1);
+  }}/>
+}
+
+function Provider ({ children }) {
+  const [key, setKey] = useState(0);
+
+  return <>
+    <button onClick={() => setKey(key + 1)}>Reset</button>
+    <MockedProvider key={key} mocks={
+    // Error first, then success
+    [
+      {
+        request: {
+          query: ALL_PEOPLE,
+        },
+        error: new ApolloError({ graphQLErrors: [
+          {
+            path: "people",
+            message: "bad thing",
+          }
+        ] })
+      },
+      {
+        request: {
+          query: ALL_PEOPLE,
+        },
+        result: () => {
+          alert("I made a network request. Hooray!");
+
+          return {
+          data: {
+            people: [
+              {
+                id: "1",
+                name: "Ralf"
+              }
+            ]
+         }}}}
+  ]}>
+    <>
+    {children}
+  </>
+  </MockedProvider>
+    </>
+}
+
+
+function App() {
+  return <>
+    <h1>Suspense example</h1>
+    <Provider>
+    <ErrorBoundary>
+    <Suspense fallback={null}>
+    <SuspenseExample />
+    </Suspense>
+    </ErrorBoundary>
+    </Provider>
+
+    <h1>Non-Suspense example</h1>
+    <Provider><NonSuspenseExample /></Provider>
+  </>
+}
+
 
 const container = document.getElementById("root");
 const root = createRoot(container);
 
 root.render(
-  <ApolloProvider client={client}>
-    <Router>
-      <Routes>
-        <Route path="/" element={<Layout />}>
-          <Route index element={<App />} />
-          <Route path="subscriptions-wslink" element={<Subscriptions />} />
-        </Route>
-      </Routes>
-    </Router>
-  </ApolloProvider>
+  <App />
 );
